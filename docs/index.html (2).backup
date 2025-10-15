@@ -1,0 +1,307 @@
+﻿<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Hockey Rater</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- HOCKEY RATER - FORCE REDEPLOY 2025-10-04 -->
+  <meta name="version" content="hockey-rater-v1">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <style>
+    body { 
+      padding: 0; 
+      margin: 0; 
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Inter', 'Helvetica Neue', Arial, sans-serif;
+    }
+    * {
+      font-family: inherit;
+    }
+  </style>
+</head>
+
+<body>
+
+<pre id="elm"></pre>
+
+<script src="elm.js?v=20251006i"></script>
+<script>
+try {
+  console.log("Initializing Elm app...");
+  console.log("Elm object:", typeof Elm !== 'undefined' ? 'found' : 'NOT FOUND');
+  
+  if (typeof Elm === 'undefined') {
+    document.getElementById('elm').innerText = 'ERROR: Elm not loaded. Check elm.js file.';
+    throw new Error('Elm is not defined');
+  }
+  
+  if (!Elm.Main) {
+    document.getElementById('elm').innerText = 'ERROR: Elm.Main not found.';
+    throw new Error('Elm.Main is not defined');  
+  }
+  
+  console.log("Creating Elm app...");
+  var app = Elm.Main.init({
+    node: document.getElementById('elm')
+  });
+  
+  console.log("Elm app created successfully:", app);
+  var hasFreshDriveData = false; // becomes true after first Drive load completes
+
+  // Send initial config
+  if (app.ports.askForAutoSave && app.ports.askForAutoSave.send) {
+    app.ports.askForAutoSave.send('');
+  }
+
+  // Set up all the port subscriptions
+  var LS_KEY = "EloTrackerData";
+  var LS_PUBLIC = "EloTrackerPublic";
+  var LS_FILTER = "EloTrackerTimeFilter"; // 'all' | 'am' | 'pm'
+  var LS_IGNORED = "EloTrackerIgnoredPlayers"; // comma-separated player IDs
+
+  if (app.ports.autoSave && app.ports.autoSave.subscribe) {
+    app.ports.autoSave.subscribe(function(json) {
+      try { localStorage.setItem(LS_KEY, json); } catch (_) {}
+    });
+  }
+
+  // Persist time filter
+  if (app.ports.saveTimeFilter && app.ports.saveTimeFilter.send) {
+    // nothing to subscribe; it's a command port used from Elm
+  }
+  if (app.ports.receiveTimeFilter && app.ports.receiveTimeFilter.subscribe) {
+    // nothing; Elm subscribes here
+  }
+  if (app.ports.askForTimeFilter && app.ports.askForTimeFilter.send) {
+    // On init, read filter and send to Elm
+    var stored = '';
+    try { stored = localStorage.getItem(LS_FILTER) || ''; } catch(_) {}
+    if (app.ports.receiveTimeFilter && app.ports.receiveTimeFilter.subscribe) {
+      // subscribe not needed; Elm already subscribed. We'll send through a synthetic path:
+    }
+    // Set up listeners so Elm can save filter changes
+    app.ports.saveTimeFilter && app.ports.saveTimeFilter.subscribe && app.ports.saveTimeFilter.subscribe(function(val){
+      try { localStorage.setItem(LS_FILTER, val); } catch(_) {}
+    });
+    // Send initial value to Elm
+    if (app.ports.receiveTimeFilter && app.ports.receiveTimeFilter.send) {
+      app.ports.receiveTimeFilter.send(stored);
+    }
+    // Also ask for current (noop payload)
+    app.ports.askForTimeFilter.send('');
+  }
+
+  // Handle ignored players persistence
+  if (app.ports.askForIgnoredPlayers && app.ports.askForIgnoredPlayers.send) {
+    var storedIgnored = '';
+    try { storedIgnored = localStorage.getItem(LS_IGNORED) || ''; } catch(_) {}
+    
+    // Set up listeners so Elm can save ignored players changes
+    app.ports.saveIgnoredPlayers && app.ports.saveIgnoredPlayers.subscribe && app.ports.saveIgnoredPlayers.subscribe(function(val){
+      try { localStorage.setItem(LS_IGNORED, val); } catch(_) {}
+    });
+    
+    // Send initial value to Elm
+    if (app.ports.receiveIgnoredPlayers && app.ports.receiveIgnoredPlayers.send) {
+      app.ports.receiveIgnoredPlayers.send(storedIgnored);
+    }
+    
+    // Also ask for current (noop payload)
+    app.ports.askForIgnoredPlayers.send('');
+  }
+
+  if (app.ports.loadStandings && app.ports.loadStandings.subscribe) {
+    app.ports.loadStandings.subscribe(function(useless) {
+      var json = '';
+      try { json = localStorage.getItem(LS_KEY) || ''; } catch (_) {}
+      if (app.ports.receiveStandings && app.ports.receiveStandings.send) {
+        app.ports.receiveStandings.send(json);
+      } 
+    });
+  }
+
+  // Subscribe to the automatic save for matches 
+  if (app.ports.saveToPublicDrive && app.ports.saveToPublicDrive.subscribe) {
+    app.ports.saveToPublicDrive.subscribe(function(json) {
+      if (!hasFreshDriveData) {
+        console.warn('⏸️ Save requested before fresh Drive data loaded; proceeding but data origin may be stale');
+      }
+      try { localStorage.setItem(LS_PUBLIC, json); } catch (_) {}
+
+      // Google Apps Script URL for your deployed web app
+      var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxzCKLQAWE3VGFskukXEgjw_DBzDv2ENndmgc-HcGK4fZFAGhiwfoUY5yewKQv-_-KAHA/exec';
+      
+      // Send to Google Apps Script (use form data to avoid CORS preflight)
+      var formData = new FormData();
+      formData.append('data', json);
+      
+      fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        body: formData
+      })
+      .then(function(response) {
+        console.log('Apps Script Response Status:', response.status);
+        return response.json().then(function(result) {
+          console.log('Apps Script Response:', result);
+          var ok = response.ok && result.ok;
+          var msg = ok ? 'Saved successfully to Google Drive (' + result.bytes + ' bytes)' : ('Save failed: ' + (result.error || 'Unknown error'));
+          
+          // Check if this was a match save (compact JSON) vs manual save (formatted JSON)
+          var isMatchSave = json.indexOf('\n') === -1; // No newlines = compact = match save
+          
+          // Debug: Log what we're checking
+          console.log('SAVE COMPLETION CHECK:', { 
+            ok: ok, 
+            isMatchSave: isMatchSave, 
+            jsonLength: json.length,
+            hasNewlines: json.indexOf('\n') !== -1,
+            jsonPreview: json.substring(0, 100) + '...'
+          });
+
+          if (app.ports.receivePublicDriveStatus && app.ports.receivePublicDriveStatus.send) {
+            var ts = new Date().toISOString();
+            app.ports.receivePublicDriveStatus.send(msg + (ok ? ('|' + ts) : ''));      
+          }
+
+          // Send completion signal for both auto-saves and manual saves to ensure data reload
+          console.log('📊 SAVE RESULT:', { 
+            ok: ok, 
+            isMatchSave: isMatchSave, 
+            bytes: result.bytes,
+            jsonHasNewlines: json.indexOf('\n') !== -1,
+            jsonLength: json.length
+          });
+          
+          if (ok && app.ports.receiveMatchSaveComplete && app.ports.receiveMatchSaveComplete.send) {
+            if (isMatchSave) {
+              console.log('🔄 AUTO-SAVE COMPLETED: Sending completion signal to Elm');
+            } else {
+              console.log('💾 MANUAL SAVE COMPLETED: Sending completion signal to Elm');
+            }
+            app.ports.receiveMatchSaveComplete.send(null);        
+            // JS-side safety net: also trigger a reload after a brief delay
+            var delayMs = isMatchSave ? 1500 : 1000;
+            setTimeout(function(){
+              console.log('🧩 JS reload fallback: triggering reloadFromPublicDrive after save (delay', delayMs, 'ms)');
+              try { reloadFromPublicDrive(); } catch (e) { console.warn('reloadFromPublicDrive not defined yet:', e); }
+            }, delayMs);
+          } else {
+            console.log('❌ NO COMPLETION SIGNAL SENT:', { 
+              ok: ok, 
+              hasPort: !!(app.ports.receiveMatchSaveComplete && app.ports.receiveMatchSaveComplete.send)
+            });
+          }
+        });
+      })
+      .catch(function(err) {
+        console.error('Drive save failed:', err);
+        var errorMsg = 'Auto-save temporarily unavailable (CORS/network issue). Data saved locally.';
+        
+        if (app.ports.receivePublicDriveStatus && app.ports.receivePublicDriveStatus.send) {
+          app.ports.receivePublicDriveStatus.send(errorMsg); 
+        }
+        // Reset auto-save state on error so voting can continue
+        if (app.ports.receiveMatchSaveComplete && app.ports.receiveMatchSaveComplete.send) {
+          console.log('AUTO-SAVE ERROR: Sending completion signal to re-enable voting');
+          app.ports.receiveMatchSaveComplete.send(null);
+        }
+      });
+    });
+  }
+
+  // Unified reload function (can be called from Elm port or JS fallback)
+  var lastReloadTs = 0;
+  function reloadFromPublicDrive(){
+    if (Date.now() - lastReloadTs < 300) {
+      console.log('⏭️ Skipping duplicate reload trigger');
+      return;
+    }
+    lastReloadTs = Date.now();
+
+    console.log('🔄 RELOAD TRIGGERED: Loading data from Google Drive...');
+    var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxzCKLQAWE3VGFskukXEgjw_DBzDv2ENndmgc-HcGK4fZFAGhiwfoUY5yewKQv-_-KAHA/exec';
+    
+    // Try to load from Google Drive first (add cache-busting parameter)
+    var cacheBuster = '?_=' + Date.now();
+    fetch(APPS_SCRIPT_URL + cacheBuster, { method: 'GET' })
+      .then(function(response) {
+        if (response.ok) {
+          return response.text();
+        } else {
+          throw new Error('Failed to load from Google Drive');
+        }
+      })
+      .then(function(json) {
+        console.log('✅ RELOAD SUCCESS: Loaded', json.length, 'bytes from Google Drive');
+        console.log('📊 RELOAD DATA PREVIEW:', json.substring(0, 200) + '...');
+        // Refresh the local cache so next session's fast path matches Drive
+        try { localStorage.setItem(LS_PUBLIC, json); } catch(_) {}
+        
+        if (app.ports.receiveStandings && app.ports.receiveStandings.send) {
+          console.log('📤 Sending reloaded data to Elm app...');
+          app.ports.receiveStandings.send(json);
+          console.log('✅ Data sent to Elm successfully');
+          hasFreshDriveData = true;
+        } else {
+          console.log('❌ receiveStandings port not available');
+        }
+      })
+      .catch(function(error) {
+        console.log('Loading from Google Drive failed, using localStorage:', error);
+        // Fallback to localStorage
+        var json = '';  
+        try { json = localStorage.getItem(LS_PUBLIC) || ''; } catch(_) {}
+        if (app.ports.receiveStandings && app.ports.receiveStandings.send) {
+          app.ports.receiveStandings.send(json);
+        }
+      });
+  }
+
+  // Load from Google Drive, fallback to localStorage
+  if (app.ports.loadFromPublicDrive && app.ports.loadFromPublicDrive.subscribe) {       
+    app.ports.loadFromPublicDrive.subscribe(function(){
+      // Fast path: immediately show cached standings (stale-while-revalidate)
+      try {
+        var cached = localStorage.getItem(LS_PUBLIC) || '';
+        if (!cached) {
+          // Fall back to private local auto-save if public copy missing
+          cached = localStorage.getItem(LS_KEY) || '';
+        }
+        if (cached && app.ports.receiveStandings && app.ports.receiveStandings.send) {
+          console.log('⚡ Using cached standings from localStorage for instant load');
+          app.ports.receiveStandings.send(cached);
+        }
+      } catch(_) {}
+
+      // Fetch fresh from Drive in background
+      reloadFromPublicDrive();
+    });
+  }
+  
+  console.log("All port subscriptions set up successfully");
+  
+  // Add debug info to page title for vote count tracking
+  if (app.ports.sendVoteCount && app.ports.sendVoteCount.subscribe) {
+    app.ports.sendVoteCount.subscribe(function(count) {
+      document.title = `ELO Ratings (${count} votes until auto-save)`;
+    });
+  }
+}
+catch (e) {
+  console.error("Initialization error:", e);
+  // Display initialization errors
+  var header = document.createElement("h1");
+  header.style.fontFamily = "monospace";
+  header.style.color = "red";
+  header.innerText = "Initialization Error";
+  var pre = document.getElementById("elm");
+  document.body.insertBefore(header, pre);
+  pre.innerText = e.toString();
+  pre.style.color = "red";
+  pre.style.background = "#ffe6e6";
+  pre.style.padding = "10px";
+}
+</script>
+
+</body>
+</html>
